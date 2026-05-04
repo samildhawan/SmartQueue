@@ -30,7 +30,7 @@ In the **evaluation phase**, we built the full high-fidelity prototype and ran a
 
 ## Team
 
-- Andrew Goh — low and high-fidelity prototype implementations
+- Andrew Goh — low and high-fidelity prototype implementations, subsequent development (embedding, clustering, etc.)
 - Sean Jackson — evaluation design, facilitation, report integration
 - Rohan Aslam — front-end prototype, refinement, bug fixing
 - Matthew DeMarinis — data collection, aggregation, convergence rationale

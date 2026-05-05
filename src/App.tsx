@@ -67,7 +67,8 @@ import {
   createSchool,
   getSchool,
   generateSchoolId
-} from './firebase';
+ } from './firebase';
+  import { useTicketClusters } from './useTicketClusters';
 
 type Screen = 'LOGIN' | 'REGISTER' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S8' | 'S9' | 'S10' | 'S11' | 'S12' | 'TA_DASHBOARD' | 'TA_SESSION_DETAIL' | 'TA_TICKET_DETAIL' | 'TA_SESSION_LIVE';
 
@@ -544,7 +545,19 @@ function AppContent() {
     };
   }, [sessions]);
 
+  // Embed-and-cluster the active tickets for the currently selected session.
+  // Lazy-loads MiniLM on first invocation, caches per-ticket embeddings so
+  // only new/changed tickets get re-embedded on subsequent updates.
+  const activeTicketsForClustering = useMemo(() => {
+    const session = sessions.find(s => s.id === selectedSessionId);
+    return (session?.tickets?.filter(t => t.status === 'active') || [])
+      .map(t => ({ id: t.id, topic: t.topic, assignment: t.assignment, summary: t.summary }));
+  }, [sessions, selectedSessionId]);
+
+  const { clusters: clusterResult, loading: clustersLoading } = useTicketClusters(activeTicketsForClustering);
+
   const DEMO_SCHOOL_ID = 'sq-demo';
+
 
   const handleSeedUsers = async () => {
     setIsSeeding(true);
@@ -2972,42 +2985,103 @@ function AppContent() {
                   )}
                 </div>
                 ) : (
-                /* R3: Grouped by topic view */
+                /* R3: Cluster-based grouped view, powered by useTicketClusters */
                 <div className="p-6 space-y-6">
-                  {(() => {
-                    const activeTickets = session.tickets?.filter(t => t.status === 'active') || [];
-                    const grouped: Record<string, Ticket[]> = {};
-                    activeTickets.forEach(t => { if (!grouped[t.topic]) grouped[t.topic] = []; grouped[t.topic].push(t); });
-                    if (Object.keys(grouped).length === 0) return <div className="text-center text-gray-medium py-8">No active tickets.</div>;
-                    return Object.entries(grouped).map(([topicName, tickets]) => (
-                      <div key={topicName} className="border border-gray-200 rounded-xl overflow-hidden">
-                        <div className="bg-primary-light/50 px-5 py-3 flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <span className="px-2.5 py-1 bg-primary text-white text-xs font-bold rounded uppercase">{topicName}</span>
-                            <span className="text-sm font-bold text-dark">{tickets.length} ticket{tickets.length !== 1 ? 's' : ''}</span>
-                          </div>
-                          <span className="text-xs text-gray-medium font-bold uppercase tracking-wider">Could batch-address together</span>
-                        </div>
-                        <div className="divide-y divide-gray-100">
-                          {tickets.map((ticket) => (
-                            <button key={ticket.id} onClick={() => { setViewingTicketId(ticket.id); setCurrentScreen('TA_TICKET_DETAIL'); }} className="w-full px-5 py-4 hover:bg-gray-50 text-left flex items-center justify-between group">
-                              <div className="flex items-center gap-4">
-                                <span className="text-xs font-mono text-gray-medium">#TX-{ticket.id.substring(0, 3).toUpperCase()}</span>
-                                <div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-bold text-dark text-sm">Student {String.fromCharCode(65 + activeTickets.indexOf(ticket))}</span>
-                                    {ticket.attendanceMode && <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${ticket.attendanceMode === 'online' ? 'bg-blue-100 text-blue-600' : 'bg-emerald-100 text-emerald-600'}`}>{ticket.attendanceMode === 'online' ? 'Online' : 'In-Person'}</span>}
-                                  </div>
-                                  <span className="text-xs text-gray-medium">{ticket.assignment} · {ticket.helpType}</span>
-                                </div>
+                  {clustersLoading && !clusterResult ? (
+                    <div className="text-center py-12 text-gray-medium">
+                      <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
+                      <p className="text-sm">Warming up clustering model...</p>
+                      <p className="text-xs mt-1 opacity-70">~14MB, cached after first load</p>
+                    </div>
+                  ) : !clusterResult || (clusterResult.clusters.length === 0 && clusterResult.noiseTicketIds.length === 0) ? (
+                    <div className="text-center text-gray-medium py-8">No active tickets.</div>
+                  ) : (
+                    <>
+                      {clusterResult.clusters.map((cluster, displayIdx) => {
+                        const clusterTickets = cluster.ticketIds
+                          .map(id => session.tickets.find(t => t.id === id))
+                          .filter((t): t is Ticket => !!t);
+                        const activeTickets = session.tickets.filter(t => t.status === 'active');
+                        return (
+                          <div key={cluster.id} className="border border-gray-200 rounded-xl overflow-hidden">
+                            <div className="bg-primary-light/50 px-5 py-3 flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <span className="px-2.5 py-1 bg-primary text-white text-xs font-bold rounded uppercase shrink-0">
+                                  Cluster {displayIdx + 1}
+                                </span>
+                                <span className="text-sm font-bold text-dark truncate">{cluster.label}</span>
                               </div>
-                              <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-primary" />
-                            </button>
-                          ))}
+                              <span className="text-xs text-gray-medium font-bold uppercase tracking-wider shrink-0">
+                                {clusterTickets.length} similar · batch-address
+                              </span>
+                            </div>
+                            <div className="divide-y divide-gray-100">
+                              {clusterTickets.map((ticket) => (
+                                <button
+                                  key={ticket.id}
+                                  onClick={() => { setViewingTicketId(ticket.id); setCurrentScreen('TA_TICKET_DETAIL'); }}
+                                  className="w-full px-5 py-4 hover:bg-gray-50 text-left flex items-center justify-between group"
+                                >
+                                  <div className="flex items-center gap-4">
+                                    <span className="text-xs font-mono text-gray-medium">#TX-{ticket.id.substring(0, 3).toUpperCase()}</span>
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-bold text-dark text-sm">Student {String.fromCharCode(65 + activeTickets.indexOf(ticket))}</span>
+                                        {ticket.attendanceMode && (
+                                          <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${ticket.attendanceMode === 'online' ? 'bg-blue-100 text-blue-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                                            {ticket.attendanceMode === 'online' ? 'Online' : 'In-Person'}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <span className="text-xs text-gray-medium">{ticket.topic} · {ticket.assignment} · {ticket.helpType}</span>
+                                    </div>
+                                  </div>
+                                  <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-primary" />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {clusterResult.noiseTicketIds.length > 0 && (
+                        <div className="border border-gray-200 rounded-xl overflow-hidden">
+                          <div className="bg-gray-100 px-5 py-3 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <span className="px-2.5 py-1 bg-gray-400 text-white text-xs font-bold rounded uppercase">Other</span>
+                              <span className="text-sm font-bold text-dark">Unique questions</span>
+                            </div>
+                            <span className="text-xs text-gray-medium font-bold uppercase tracking-wider">
+                              {clusterResult.noiseTicketIds.length} ticket{clusterResult.noiseTicketIds.length !== 1 ? 's' : ''}
+                            </span>
+                          </div>
+                          <div className="divide-y divide-gray-100">
+                            {clusterResult.noiseTicketIds.map(tid => {
+                              const ticket = session.tickets.find(t => t.id === tid);
+                              if (!ticket) return null;
+                              const activeTickets = session.tickets.filter(t => t.status === 'active');
+                              return (
+                                <button
+                                  key={ticket.id}
+                                  onClick={() => { setViewingTicketId(ticket.id); setCurrentScreen('TA_TICKET_DETAIL'); }}
+                                  className="w-full px-5 py-4 hover:bg-gray-50 text-left flex items-center justify-between group"
+                                >
+                                  <div className="flex items-center gap-4">
+                                    <span className="text-xs font-mono text-gray-medium">#TX-{ticket.id.substring(0, 3).toUpperCase()}</span>
+                                    <div>
+                                      <span className="font-bold text-dark text-sm">Student {String.fromCharCode(65 + activeTickets.indexOf(ticket))}</span>
+                                      <div className="text-xs text-gray-medium">{ticket.topic} · {ticket.assignment}</div>
+                                    </div>
+                                  </div>
+                                  <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-primary" />
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                    ));
-                  })()}
+                      )}
+                    </>
+                  )}
                 </div>
                 )}
               </div>

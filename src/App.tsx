@@ -39,6 +39,8 @@ import {
   useSortable
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { useDroppable } from '@dnd-kit/core';
+import { NOISE_PIN } from './ticket-clustering';
 import { 
   auth, 
   db, 
@@ -176,6 +178,428 @@ export default function App() {
     </ErrorBoundary>
   );
 }
+
+interface SortableClusterTicketProps {
+  ticket: Ticket;
+  position: number;     // 1-indexed queue position across all active tickets
+  isPinned: boolean;
+  onUnpin?: () => void;
+}
+
+const SortableClusterTicket: React.FC<SortableClusterTicketProps> = ({ ticket, position, isPinned, onUnpin }) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: ticket.id, data: { type: 'ticket', ticketId: ticket.id } });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : undefined,
+    opacity: isDragging ? 0.4 : 1,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`px-5 py-4 flex items-center justify-between bg-white border-b border-gray-100 last:border-b-0 ${isDragging ? 'shadow-lg ring-2 ring-primary/20' : ''}`}
+    >
+      <div className="flex items-center gap-3 min-w-0">
+        <div
+          {...attributes}
+          {...listeners}
+          className="cursor-grab active:cursor-grabbing p-1 hover:bg-gray-100 rounded text-gray-300 hover:text-gray-500 transition-colors shrink-0"
+          aria-label="Drag ticket"
+        >
+          <GripVertical className="w-4 h-4" />
+        </div>
+        <span className="text-xs font-mono text-gray-medium shrink-0">#TX-{ticket.id.substring(0, 3).toUpperCase()}</span>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-bold text-dark text-sm">Student {ticket.uid.substring(0, 4).toUpperCase()}</span>
+            {ticket.attendanceMode && (
+              <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${ticket.attendanceMode === 'online' ? 'bg-blue-100 text-blue-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                {ticket.attendanceMode === 'online' ? 'Online' : 'In-Person'}
+              </span>
+            )}
+            {isPinned && (
+              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="This ticket was manually placed in this cluster">
+                Pinned
+              </span>
+            )}
+          </div>
+          <span className="text-xs text-gray-medium truncate block">{ticket.topic} · {ticket.assignment} · {ticket.helpType}</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-3 shrink-0">
+        {isPinned && onUnpin && (
+          <button
+            onClick={onUnpin}
+            className="text-[10px] font-bold text-amber-700 uppercase tracking-wider hover:underline"
+            title="Remove manual pin and let the algorithm decide"
+          >
+            Unpin
+          </button>
+        )}
+        <span className="text-[10px] font-bold text-gray-medium uppercase">
+          {position === 1 ? 'Now' : `#${position}`}
+        </span>
+      </div>
+    </div>
+  );
+};
+
+interface DroppableClusterZoneProps {
+  clusterKey: string;       // unique drop target id (e.g. "cluster-3" or "noise")
+  label: string;
+  isOver?: boolean;
+}
+
+const DroppableClusterZone: React.FC<DroppableClusterZoneProps> = ({ clusterKey, label }) => {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `dropzone-${clusterKey}`,
+    data: { type: 'cluster-zone', clusterKey },
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={`px-5 py-2 text-center text-[10px] font-bold uppercase tracking-widest transition-all ${isOver ? 'bg-primary/10 text-primary border-t-2 border-primary border-dashed' : 'bg-gray-50 text-gray-medium border-t border-gray-100'}`}
+    >
+      {isOver ? `Drop to add to ${label}` : `Drop here to add to this group`}
+    </div>
+  );
+};
+
+interface ClusterDragViewProps {
+  session: Session;
+  activeTickets: Ticket[];
+  clusterResult: any; // ClusterResult from useTicketClusters
+  clustersLoading: boolean;
+  sensors: any;
+  onMoveTicketBetweenClusters: (ticketId: string, targetClusterKey: string, newPositionMs: number) => Promise<void>;
+  onReorderWithinCluster: (ticketId: string, newCreatedAtMs: number) => Promise<void>;
+  onMoveCluster: (memberIds: string[], baseCreatedAtMs: number) => Promise<void>;
+  onUnpin: (ticketId: string) => Promise<void>;
+}
+
+const ClusterDragView: React.FC<ClusterDragViewProps> = ({
+  session,
+  activeTickets,
+  clusterResult,
+  clustersLoading,
+  sensors,
+  onMoveTicketBetweenClusters,
+  onReorderWithinCluster,
+  onMoveCluster,
+  onUnpin,
+}) => {
+  // Build display order: clusters sorted by their earliest member's createdAt
+  const displayOrder = useMemo(() => {
+    if (!clusterResult) return { clusters: [], noise: [] };
+    const ticketTime = (t: Ticket) => t.createdAt?.toDate?.()?.getTime() ?? 0;
+    const clustersWithTime = clusterResult.clusters.map((c: any) => {
+      const members = c.ticketIds
+        .map((id: string) => session.tickets.find(t => t.id === id))
+        .filter((t: Ticket | undefined): t is Ticket => !!t)
+        .sort((a: Ticket, b: Ticket) => ticketTime(a) - ticketTime(b));
+      return {
+        ...c,
+        members,
+        earliestTime: members.length > 0 ? ticketTime(members[0]) : Infinity,
+      };
+    }).sort((a: any, b: any) => a.earliestTime - b.earliestTime);
+
+    const noiseMembers = clusterResult.noiseTicketIds
+      .map((id: string) => session.tickets.find(t => t.id === id))
+      .filter((t: Ticket | undefined): t is Ticket => !!t)
+      .sort((a: Ticket, b: Ticket) => ticketTime(a) - ticketTime(b));
+
+    return { clusters: clustersWithTime, noise: noiseMembers };
+  }, [clusterResult, session.tickets]);
+
+  // Position lookup: ticket id -> 1-indexed queue position across all active tickets
+  const positionByTicket = useMemo(() => {
+    const m = new Map<string, number>();
+    activeTickets.forEach((t, idx) => m.set(t.id, idx + 1));
+    return m;
+  }, [activeTickets]);
+
+  // Flat list of all ticket ids in display order, used by SortableContext
+  const allTicketIdsInDisplayOrder = useMemo(() => {
+    const ids: string[] = [];
+    displayOrder.clusters.forEach((c: any) => c.members.forEach((m: Ticket) => ids.push(m.id)));
+    displayOrder.noise.forEach((m: Ticket) => ids.push(m.id));
+    return ids;
+  }, [displayOrder]);
+
+  // Cluster-level sortable: header items
+  const clusterSortIds = useMemo(
+    () => displayOrder.clusters.map((c: any) => `cluster-header-${c.representativeTicketId}`),
+    [displayOrder]
+  );
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const activeData = active.data.current;
+    const overData = over.data.current;
+
+    // Whole-cluster drag: reorder clusters
+    if (typeof active.id === 'string' && active.id.startsWith('cluster-header-')) {
+      if (typeof over.id !== 'string' || !over.id.startsWith('cluster-header-')) return;
+      const oldIdx = clusterSortIds.indexOf(active.id);
+      const newIdx = clusterSortIds.indexOf(over.id);
+      if (oldIdx === -1 || newIdx === -1) return;
+      const reordered = arrayMove(displayOrder.clusters, oldIdx, newIdx);
+      // Find the time slot to start at: just before whatever was at newIdx originally
+      // Simplest: take min createdAt of the cluster currently at newIdx, work backwards.
+      // We rewrite all clusters' members in the reordered order, using a simple
+      // monotonic timestamp scheme based on the earliest existing time.
+      const earliest = Math.min(...reordered.map((c: any) => c.earliestTime).filter((t: number) => isFinite(t)));
+      let cursor = earliest;
+      for (const cluster of reordered) {
+        const memberIds = cluster.members.map((m: Ticket) => m.id);
+        await onMoveCluster(memberIds, cursor);
+        // Leave 1 second gap between clusters to avoid timestamp collisions
+        cursor += memberIds.length * 100 + 1000;
+      }
+      return;
+    }
+
+    // Ticket-level drag
+    if (activeData?.type !== 'ticket') return;
+    const draggedTicketId = active.id as string;
+    const draggedTicket = session.tickets.find(t => t.id === draggedTicketId);
+    if (!draggedTicket) return;
+
+    // Determine source cluster (where the ticket currently lives)
+    const sourceCluster = displayOrder.clusters.find((c: any) =>
+      c.members.some((m: Ticket) => m.id === draggedTicketId)
+    );
+    const isFromNoise = displayOrder.noise.some((m: Ticket) => m.id === draggedTicketId);
+
+    // Determine destination
+    let destClusterKey: string | null = null;
+    let destNeighborId: string | null = null;
+
+    if (overData?.type === 'cluster-zone') {
+      // Dropped on an empty drop zone of a cluster
+      destClusterKey = overData.clusterKey;
+    } else if (typeof over.id === 'string') {
+      // Dropped on another ticket — figure out which cluster contains it
+      const overTicketId = over.id;
+      const overInCluster = displayOrder.clusters.find((c: any) =>
+        c.members.some((m: Ticket) => m.id === overTicketId)
+      );
+      const overInNoise = displayOrder.noise.some((m: Ticket) => m.id === overTicketId);
+      if (overInCluster) {
+        destClusterKey = `cluster-${overInCluster.representativeTicketId}`;
+        destNeighborId = overTicketId;
+      } else if (overInNoise) {
+        destClusterKey = 'noise';
+        destNeighborId = overTicketId;
+      }
+    }
+
+    if (!destClusterKey) return;
+
+    // Compute new createdAt: between the destination neighbor and the next ticket
+    const ticketTime = (t: Ticket) => t.createdAt?.toDate?.()?.getTime() ?? 0;
+    let newCreatedAtMs: number;
+    if (destNeighborId) {
+      const neighborTicket = session.tickets.find(t => t.id === destNeighborId);
+      const neighborTime = neighborTicket ? ticketTime(neighborTicket) : Date.now();
+      // Find the ticket immediately after the neighbor in the same cluster
+      const destCluster = destClusterKey === 'noise'
+        ? { members: displayOrder.noise }
+        : displayOrder.clusters.find((c: any) => `cluster-${c.representativeTicketId}` === destClusterKey);
+      if (destCluster) {
+        const idx = destCluster.members.findIndex((m: Ticket) => m.id === destNeighborId);
+        const nextMember = destCluster.members[idx + 1];
+        const nextTime = nextMember ? ticketTime(nextMember) : neighborTime + 2000;
+        newCreatedAtMs = (neighborTime + nextTime) / 2;
+      } else {
+        newCreatedAtMs = neighborTime + 1000;
+      }
+    } else {
+      // Dropped into an empty cluster zone — use end-of-cluster timestamp
+      const destCluster = destClusterKey === 'noise'
+        ? { members: displayOrder.noise }
+        : displayOrder.clusters.find((c: any) => `cluster-${c.representativeTicketId}` === destClusterKey);
+      const lastMember = destCluster?.members[destCluster.members.length - 1];
+      newCreatedAtMs = lastMember ? ticketTime(lastMember) + 1000 : Date.now();
+    }
+
+    // Decide: same cluster (reorder only) or cross-cluster (set pin)
+    const sourceClusterKey = isFromNoise
+      ? 'noise'
+      : sourceCluster
+        ? `cluster-${sourceCluster.representativeTicketId}`
+        : null;
+
+    if (sourceClusterKey === destClusterKey) {
+      // Within-cluster reorder
+      await onReorderWithinCluster(draggedTicketId, newCreatedAtMs);
+    } else {
+      // Cross-cluster: set pin AND update createdAt
+      await onMoveTicketBetweenClusters(draggedTicketId, destClusterKey, newCreatedAtMs);
+    }
+  };
+
+  if (clustersLoading && !clusterResult) {
+    return (
+      <div className="text-center py-12 text-gray-medium bg-white rounded-2xl border-2 border-dashed border-gray-200">
+        <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
+        <p className="text-sm">Warming up clustering model...</p>
+        <p className="text-xs mt-1 opacity-70">~14MB, cached after first load</p>
+      </div>
+    );
+  }
+
+  if (!clusterResult || (displayOrder.clusters.length === 0 && displayOrder.noise.length === 0)) {
+    return (
+      <div className="text-center py-12 bg-white rounded-2xl border-2 border-dashed border-gray-200">
+        <p className="text-gray-medium">Queue is empty.</p>
+      </div>
+    );
+  }
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      {/* Cluster-level sortable for whole-cluster drag */}
+      <SortableContext items={clusterSortIds} strategy={verticalListSortingStrategy}>
+        {/* Ticket-level sortable nested inside */}
+        <SortableContext items={allTicketIdsInDisplayOrder} strategy={verticalListSortingStrategy}>
+          <div className="space-y-4">
+            {displayOrder.clusters.map((cluster: any) => (
+              <SortableClusterCard
+                key={cluster.id}
+                cluster={cluster}
+                positionByTicket={positionByTicket}
+                onUnpin={onUnpin}
+                pinnedTicketIds={new Set(
+                  session.tickets.filter(t => !!t.pinnedToTicketId).map(t => t.id)
+                )}
+              />
+            ))}
+
+            {displayOrder.noise.length > 0 && (
+              <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
+                <div className="bg-gray-100 px-5 py-3 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="px-2.5 py-1 bg-gray-400 text-white text-xs font-bold rounded uppercase">Other</span>
+                    <span className="text-sm font-bold text-dark">Unique questions</span>
+                  </div>
+                  <span className="text-xs text-gray-medium font-bold uppercase tracking-wider">
+                    {displayOrder.noise.length} ticket{displayOrder.noise.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <div>
+                  {displayOrder.noise.map((ticket: Ticket) => (
+                    <SortableClusterTicket
+                      key={ticket.id}
+                      ticket={ticket}
+                      position={positionByTicket.get(ticket.id) ?? 0}
+                      isPinned={!!ticket.pinnedToTicketId}
+                      onUnpin={ticket.pinnedToTicketId ? () => onUnpin(ticket.id) : undefined}
+                    />
+                  ))}
+                  <DroppableClusterZone clusterKey="noise" label="Other" />
+                </div>
+              </div>
+            )}
+
+            {/* If "Other" cluster doesn't exist yet but user wants to drag something to noise */}
+            {displayOrder.noise.length === 0 && (
+              <div className="border border-dashed border-gray-200 rounded-xl overflow-hidden bg-white/50">
+                <DroppableClusterZone clusterKey="noise" label="Other (unique)" />
+              </div>
+            )}
+          </div>
+        </SortableContext>
+      </SortableContext>
+    </DndContext>
+  );
+};
+
+// Cluster card that's itself draggable as a whole
+interface SortableClusterCardProps {
+  cluster: any;
+  positionByTicket: Map<string, number>;
+  pinnedTicketIds: Set<string>;
+  onUnpin: (ticketId: string) => Promise<void>;
+}
+
+const SortableClusterCard: React.FC<SortableClusterCardProps> = ({ cluster, positionByTicket, pinnedTicketIds, onUnpin }) => {
+  const sortableId = `cluster-header-${cluster.representativeTicketId}`;
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: sortableId, data: { type: 'cluster-header', clusterId: cluster.id } });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 30 : undefined,
+    opacity: isDragging ? 0.6 : 1,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`border border-gray-200 rounded-xl overflow-hidden bg-white ${isDragging ? 'shadow-2xl ring-2 ring-primary' : ''}`}
+    >
+      <div className="bg-primary-light/50 px-5 py-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <div
+            {...attributes}
+            {...listeners}
+            className="cursor-grab active:cursor-grabbing p-1 hover:bg-white/60 rounded text-primary/60 hover:text-primary transition-colors shrink-0"
+            aria-label="Drag entire cluster"
+            title="Drag to reorder cluster in queue"
+          >
+            <GripVertical className="w-4 h-4" />
+          </div>
+          <span className="px-2.5 py-1 bg-primary text-white text-xs font-bold rounded uppercase shrink-0">
+            Cluster
+          </span>
+          <span className="text-sm font-bold text-dark truncate">{cluster.label}</span>
+        </div>
+        <span className="text-xs text-gray-medium font-bold uppercase tracking-wider shrink-0">
+          {cluster.members.length} similar
+        </span>
+      </div>
+      <div>
+        {cluster.members.map((ticket: Ticket) => (
+          <SortableClusterTicket
+            key={ticket.id}
+            ticket={ticket}
+            position={positionByTicket.get(ticket.id) ?? 0}
+            isPinned={pinnedTicketIds.has(ticket.id)}
+            onUnpin={pinnedTicketIds.has(ticket.id) ? () => onUnpin(ticket.id) : undefined}
+          />
+        ))}
+        <DroppableClusterZone clusterKey={`cluster-${cluster.representativeTicketId}`} label={cluster.label} />
+      </div>
+    </div>
+  );
+};
 
 const SortableTicketItem: React.FC<{ ticket: Ticket, index: number, session: Session }> = ({ ticket, index, session }) => {
   const {
@@ -562,6 +986,28 @@ function AppContent() {
   }, [sessions, selectedSessionId]);
 
   const { clusters: clusterResult, loading: clustersLoading } = useTicketClusters(activeTicketsForClustering);
+
+  // Update a ticket's manual cluster pin. Pass null to remove the pin and
+  // let the embedding-based clustering decide. Pass NOISE_PIN to force the
+  // ticket into the "Other" bucket. Pass another ticket's id to pin the
+  // dragged ticket into that ticket's cluster.
+  const updateTicketPin = async (
+    sessionId: string,
+    ticketId: string,
+    pinnedToTicketId: string | null,
+    newCreatedAtMs?: number
+  ) => {
+    try {
+      const update: any = { pinnedToTicketId };
+      if (newCreatedAtMs !== undefined) {
+        update.createdAt = Timestamp.fromMillis(newCreatedAtMs);
+      }
+      await updateDoc(doc(db, 'sessions', sessionId, 'tickets', ticketId), update);
+    } catch (error) {
+      console.error('Error updating ticket pin:', error);
+      handleFirestoreError(error, OperationType.UPDATE, `sessions/${sessionId}/tickets/${ticketId}`);
+    }
+  };
 
   const DEMO_SCHOOL_ID = 'sq-demo';
 
@@ -3364,18 +3810,6 @@ function AppContent() {
 
                 <div className="space-y-4">
                   <h3 className="text-[10px] font-bold text-gray-medium uppercase tracking-[0.2em] mb-4">Queue</h3>
-                  
-                  <DndContext 
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                  >
-                    <SortableContext 
-                      items={queueTickets.map((t: Ticket) => t.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <div className="space-y-4">
-                  <h3 className="text-[10px] font-bold text-gray-medium uppercase tracking-[0.2em] mb-4">Queue</h3>
 
                   {taQueueViewMode === 'list' ? (
                     <>
@@ -3414,100 +3848,51 @@ function AppContent() {
                       )}
                     </>
                   ) : (
-                    /* Cluster-based grouped view, powered by useTicketClusters */
-                    <div className="space-y-4">
-                      {clustersLoading && !clusterResult ? (
-                        <div className="text-center py-12 text-gray-medium bg-white rounded-2xl border-2 border-dashed border-gray-200">
-                          <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
-                          <p className="text-sm">Warming up clustering model...</p>
-                          <p className="text-xs mt-1 opacity-70">~14MB, cached after first load</p>
-                        </div>
-                      ) : !clusterResult || (clusterResult.clusters.length === 0 && clusterResult.noiseTicketIds.length === 0) ? (
-                        <div className="text-center py-12 bg-white rounded-2xl border-2 border-dashed border-gray-200">
-                          <p className="text-gray-medium">Queue is empty.</p>
-                        </div>
-                      ) : (
-                        <>
-                          {clusterResult.clusters.map((cluster, displayIdx) => {
-                            const clusterTickets = cluster.ticketIds
-                              .map(id => session.tickets.find(t => t.id === id))
-                              .filter((t): t is Ticket => !!t);
-                            return (
-                              <div key={cluster.id} className="border border-gray-200 rounded-xl overflow-hidden bg-white">
-                                <div className="bg-primary-light/50 px-5 py-3 flex items-center justify-between gap-3">
-                                  <div className="flex items-center gap-3 min-w-0">
-                                    <span className="px-2.5 py-1 bg-primary text-white text-xs font-bold rounded uppercase shrink-0">
-                                      Cluster {displayIdx + 1}
-                                    </span>
-                                    <span className="text-sm font-bold text-dark truncate">{cluster.label}</span>
-                                  </div>
-                                  <span className="text-xs text-gray-medium font-bold uppercase tracking-wider shrink-0">
-                                    {clusterTickets.length} similar · batch-address
-                                  </span>
-                                </div>
-                                <div className="divide-y divide-gray-100">
-                                  {clusterTickets.map((ticket) => (
-                                    <div key={ticket.id} className="px-5 py-4 flex items-center justify-between">
-                                      <div className="flex items-center gap-4">
-                                        <span className="text-xs font-mono text-gray-medium">#TX-{ticket.id.substring(0, 3).toUpperCase()}</span>
-                                        <div>
-                                          <div className="flex items-center gap-2">
-                                            <span className="font-bold text-dark text-sm">Student {String.fromCharCode(65 + activeTickets.indexOf(ticket))}</span>
-                                            {ticket.attendanceMode && (
-                                              <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${ticket.attendanceMode === 'online' ? 'bg-blue-100 text-blue-600' : 'bg-emerald-100 text-emerald-600'}`}>
-                                                {ticket.attendanceMode === 'online' ? 'Online' : 'In-Person'}
-                                              </span>
-                                            )}
-                                          </div>
-                                          <span className="text-xs text-gray-medium">{ticket.topic} · {ticket.assignment} · {ticket.helpType}</span>
-                                        </div>
-                                      </div>
-                                      <span className="text-[10px] font-bold text-gray-medium uppercase">
-                                        {activeTickets.indexOf(ticket) === 0 ? 'Now' : `#${activeTickets.indexOf(ticket) + 1}`}
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
+                    /* Cluster view with full drag-and-drop support */
+                    <ClusterDragView
+                      session={session}
+                      activeTickets={activeTickets}
+                      clusterResult={clusterResult}
+                      clustersLoading={clustersLoading}
+                      sensors={sensors}
+                      onMoveTicketBetweenClusters={async (ticketId, targetClusterKey, newPositionMs) => {
+                        // targetClusterKey is either "noise", "cluster-<repId>", or "unpin"
+                        if (targetClusterKey === 'unpin') {
+                          await updateTicketPin(session.id, ticketId, null, newPositionMs);
+                        } else if (targetClusterKey === 'noise') {
+                          await updateTicketPin(session.id, ticketId, NOISE_PIN, newPositionMs);
+                        } else if (targetClusterKey.startsWith('cluster-')) {
+                          const repId = targetClusterKey.replace('cluster-', '');
+                          await updateTicketPin(session.id, ticketId, repId, newPositionMs);
+                        }
+                      }}
+                      onReorderWithinCluster={async (ticketId, newCreatedAtMs) => {
+                        try {
+                          await updateDoc(doc(db, 'sessions', session.id, 'tickets', ticketId), {
+                            createdAt: Timestamp.fromMillis(newCreatedAtMs),
+                          });
+                        } catch (error) {
+                          console.error('Reorder failed:', error);
+                        }
+                      }}
+                      onMoveCluster={async (memberIds, baseCreatedAtMs) => {
+                        // Rewrite all members' createdAt as a contiguous block,
+                        // 100ms apart, starting at baseCreatedAtMs.
+                        try {
+                          for (let i = 0; i < memberIds.length; i++) {
+                            await updateDoc(
+                              doc(db, 'sessions', session.id, 'tickets', memberIds[i]),
+                              { createdAt: Timestamp.fromMillis(baseCreatedAtMs + i * 100) }
                             );
-                          })}
-
-                          {clusterResult.noiseTicketIds.length > 0 && (
-                            <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
-                              <div className="bg-gray-100 px-5 py-3 flex items-center justify-between">
-                                <div className="flex items-center gap-3">
-                                  <span className="px-2.5 py-1 bg-gray-400 text-white text-xs font-bold rounded uppercase">Other</span>
-                                  <span className="text-sm font-bold text-dark">Unique questions</span>
-                                </div>
-                                <span className="text-xs text-gray-medium font-bold uppercase tracking-wider">
-                                  {clusterResult.noiseTicketIds.length} ticket{clusterResult.noiseTicketIds.length !== 1 ? 's' : ''}
-                                </span>
-                              </div>
-                              <div className="divide-y divide-gray-100">
-                                {clusterResult.noiseTicketIds.map(tid => {
-                                  const ticket = session.tickets.find(t => t.id === tid);
-                                  if (!ticket) return null;
-                                  return (
-                                    <div key={ticket.id} className="px-5 py-4 flex items-center justify-between">
-                                      <div className="flex items-center gap-4">
-                                        <span className="text-xs font-mono text-gray-medium">#TX-{ticket.id.substring(0, 3).toUpperCase()}</span>
-                                        <div>
-                                          <span className="font-bold text-dark text-sm">Student {String.fromCharCode(65 + activeTickets.indexOf(ticket))}</span>
-                                          <div className="text-xs text-gray-medium">{ticket.topic} · {ticket.assignment}</div>
-                                        </div>
-                                      </div>
-                                      <span className="text-[10px] font-bold text-gray-medium uppercase">
-                                        {activeTickets.indexOf(ticket) === 0 ? 'Now' : `#${activeTickets.indexOf(ticket) + 1}`}
-                                      </span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
+                          }
+                        } catch (error) {
+                          console.error('Cluster move failed:', error);
+                        }
+                      }}
+                      onUnpin={async (ticketId) => {
+                        await updateTicketPin(session.id, ticketId, null);
+                      }}
+                    />
                   )}
                 </div>
 

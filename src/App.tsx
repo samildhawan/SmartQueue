@@ -3298,6 +3298,13 @@ function AppContent() {
                 </div>
               )}
 
+              {/* View mode toggle: list vs cluster-based grouping */}
+              <div className="flex items-center gap-2 mb-6">
+                <span className="text-xs font-bold text-gray-medium uppercase tracking-wider">View:</span>
+                <button onClick={() => setTaQueueViewMode('list')} className={`px-3 py-1.5 text-xs font-bold rounded-full transition-all ${taQueueViewMode === 'list' ? 'bg-primary text-white' : 'bg-gray-100 text-gray-medium hover:bg-gray-200'}`}>List</button>
+                <button onClick={() => setTaQueueViewMode('grouped')} className={`px-3 py-1.5 text-xs font-bold rounded-full transition-all ${taQueueViewMode === 'grouped' ? 'bg-primary text-white' : 'bg-gray-100 text-gray-medium hover:bg-gray-200'}`}>Grouped by Topic</button>
+              </div>
+
               <div className="space-y-8">
                 {activeTickets.length > 0 && (
                   <div className="animate-in fade-in slide-in-from-top-4 duration-500">
@@ -3361,30 +3368,142 @@ function AppContent() {
                       strategy={verticalListSortingStrategy}
                     >
                       <div className="space-y-4">
-                        {queueTickets.map((ticket: Ticket, idx: number) => (
-                          <SortableTicketItem 
-                            key={ticket.id} 
-                            ticket={ticket} 
-                            index={idx} 
-                            session={session} 
-                          />
-                        ))}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
+                  <h3 className="text-[10px] font-bold text-gray-medium uppercase tracking-[0.2em] mb-4">Queue</h3>
 
-                  {activeTickets.length === 0 && (
-                    <div className="text-center py-12 bg-white rounded-2xl border-2 border-dashed border-gray-200">
-                      <p className="text-gray-medium">Queue is empty.</p>
-                    </div>
-                  )}
+                  {taQueueViewMode === 'list' ? (
+                    <>
+                      <DndContext
+                        sensors={sensors}
+                        collisionDetection={closestCenter}
+                        onDragEnd={handleDragEnd}
+                      >
+                        <SortableContext
+                          items={queueTickets.map((t: Ticket) => t.id)}
+                          strategy={verticalListSortingStrategy}
+                        >
+                          <div className="space-y-4">
+                            {queueTickets.map((ticket: Ticket, idx: number) => (
+                              <SortableTicketItem
+                                key={ticket.id}
+                                ticket={ticket}
+                                index={idx}
+                                session={session}
+                              />
+                            ))}
+                          </div>
+                        </SortableContext>
+                      </DndContext>
 
-                  {activeTickets.length > 1 && (
-                    <div className="mt-8 p-4 bg-gray-100 rounded-lg text-center text-xs font-bold text-gray-medium uppercase tracking-widest">
-                      ETAs updated for all students.
+                      {activeTickets.length === 0 && (
+                        <div className="text-center py-12 bg-white rounded-2xl border-2 border-dashed border-gray-200">
+                          <p className="text-gray-medium">Queue is empty.</p>
+                        </div>
+                      )}
+
+                      {activeTickets.length > 1 && (
+                        <div className="mt-8 p-4 bg-gray-100 rounded-lg text-center text-xs font-bold text-gray-medium uppercase tracking-widest">
+                          ETAs updated for all students.
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    /* Cluster-based grouped view, powered by useTicketClusters */
+                    <div className="space-y-4">
+                      {clustersLoading && !clusterResult ? (
+                        <div className="text-center py-12 text-gray-medium bg-white rounded-2xl border-2 border-dashed border-gray-200">
+                          <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
+                          <p className="text-sm">Warming up clustering model...</p>
+                          <p className="text-xs mt-1 opacity-70">~14MB, cached after first load</p>
+                        </div>
+                      ) : !clusterResult || (clusterResult.clusters.length === 0 && clusterResult.noiseTicketIds.length === 0) ? (
+                        <div className="text-center py-12 bg-white rounded-2xl border-2 border-dashed border-gray-200">
+                          <p className="text-gray-medium">Queue is empty.</p>
+                        </div>
+                      ) : (
+                        <>
+                          {clusterResult.clusters.map((cluster, displayIdx) => {
+                            const clusterTickets = cluster.ticketIds
+                              .map(id => session.tickets.find(t => t.id === id))
+                              .filter((t): t is Ticket => !!t);
+                            return (
+                              <div key={cluster.id} className="border border-gray-200 rounded-xl overflow-hidden bg-white">
+                                <div className="bg-primary-light/50 px-5 py-3 flex items-center justify-between gap-3">
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <span className="px-2.5 py-1 bg-primary text-white text-xs font-bold rounded uppercase shrink-0">
+                                      Cluster {displayIdx + 1}
+                                    </span>
+                                    <span className="text-sm font-bold text-dark truncate">{cluster.label}</span>
+                                  </div>
+                                  <span className="text-xs text-gray-medium font-bold uppercase tracking-wider shrink-0">
+                                    {clusterTickets.length} similar · batch-address
+                                  </span>
+                                </div>
+                                <div className="divide-y divide-gray-100">
+                                  {clusterTickets.map((ticket) => (
+                                    <div key={ticket.id} className="px-5 py-4 flex items-center justify-between">
+                                      <div className="flex items-center gap-4">
+                                        <span className="text-xs font-mono text-gray-medium">#TX-{ticket.id.substring(0, 3).toUpperCase()}</span>
+                                        <div>
+                                          <div className="flex items-center gap-2">
+                                            <span className="font-bold text-dark text-sm">Student {String.fromCharCode(65 + activeTickets.indexOf(ticket))}</span>
+                                            {ticket.attendanceMode && (
+                                              <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${ticket.attendanceMode === 'online' ? 'bg-blue-100 text-blue-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                                                {ticket.attendanceMode === 'online' ? 'Online' : 'In-Person'}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <span className="text-xs text-gray-medium">{ticket.topic} · {ticket.assignment} · {ticket.helpType}</span>
+                                        </div>
+                                      </div>
+                                      <span className="text-[10px] font-bold text-gray-medium uppercase">
+                                        {activeTickets.indexOf(ticket) === 0 ? 'Now' : `#${activeTickets.indexOf(ticket) + 1}`}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          {clusterResult.noiseTicketIds.length > 0 && (
+                            <div className="border border-gray-200 rounded-xl overflow-hidden bg-white">
+                              <div className="bg-gray-100 px-5 py-3 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <span className="px-2.5 py-1 bg-gray-400 text-white text-xs font-bold rounded uppercase">Other</span>
+                                  <span className="text-sm font-bold text-dark">Unique questions</span>
+                                </div>
+                                <span className="text-xs text-gray-medium font-bold uppercase tracking-wider">
+                                  {clusterResult.noiseTicketIds.length} ticket{clusterResult.noiseTicketIds.length !== 1 ? 's' : ''}
+                                </span>
+                              </div>
+                              <div className="divide-y divide-gray-100">
+                                {clusterResult.noiseTicketIds.map(tid => {
+                                  const ticket = session.tickets.find(t => t.id === tid);
+                                  if (!ticket) return null;
+                                  return (
+                                    <div key={ticket.id} className="px-5 py-4 flex items-center justify-between">
+                                      <div className="flex items-center gap-4">
+                                        <span className="text-xs font-mono text-gray-medium">#TX-{ticket.id.substring(0, 3).toUpperCase()}</span>
+                                        <div>
+                                          <span className="font-bold text-dark text-sm">Student {String.fromCharCode(65 + activeTickets.indexOf(ticket))}</span>
+                                          <div className="text-xs text-gray-medium">{ticket.topic} · {ticket.assignment}</div>
+                                        </div>
+                                      </div>
+                                      <span className="text-[10px] font-bold text-gray-medium uppercase">
+                                        {activeTickets.indexOf(ticket) === 0 ? 'Now' : `#${activeTickets.indexOf(ticket) + 1}`}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
+
 
                 {answeredTickets.length > 0 && (
                   <div className="space-y-4 pt-8 border-t border-gray-200">

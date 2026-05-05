@@ -73,18 +73,19 @@ import {
 type Screen = 'LOGIN' | 'REGISTER' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S8' | 'S9' | 'S10' | 'S11' | 'S12' | 'TA_DASHBOARD' | 'TA_SESSION_DETAIL' | 'TA_TICKET_DETAIL' | 'TA_SESSION_LIVE';
 
 interface Ticket {
-  id: string;
-  topic: string;
-  assignment: string;
-  summary: string;
-  helpType: string;
-  uid: string;
-  createdAt: any;
-  status: 'active' | 'resolved' | 'archived';
-  taExplanation?: string;
-  resolvedAt?: any;
-  attendanceMode?: 'in-person' | 'online';
-}
+    id: string;
+    topic: string;
+    assignment: string;
+    summary: string;
+    helpType: string;
+    uid: string;
+    createdAt: any;
+    status: 'active' | 'resolved' | 'archived';
+    taExplanation?: string;
+    resolvedAt?: any;
+    attendanceMode?: 'in-person' | 'online';
+    pinnedToTicketId?: string | null;
+  }
 
 interface Session {
   id: string;
@@ -551,7 +552,13 @@ function AppContent() {
   const activeTicketsForClustering = useMemo(() => {
     const session = sessions.find(s => s.id === selectedSessionId);
     return (session?.tickets?.filter(t => t.status === 'active') || [])
-      .map(t => ({ id: t.id, topic: t.topic, assignment: t.assignment, summary: t.summary }));
+      .map(t => ({
+        id: t.id,
+        topic: t.topic,
+        assignment: t.assignment,
+        summary: t.summary,
+        pinnedToTicketId: (t as any).pinnedToTicketId ?? null,
+      }));
   }, [sessions, selectedSessionId]);
 
   const { clusters: clusterResult, loading: clustersLoading } = useTicketClusters(activeTicketsForClustering);

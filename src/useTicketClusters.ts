@@ -3,6 +3,10 @@
 // React hook that takes a list of tickets and returns clustered results.
 // Lazy-loads the embedding model on first use, caches per-ticket embeddings
 // across renders, and only re-embeds tickets whose content actually changed.
+//
+// Manual pins (`pinnedToTicketId`) are passed through to the clustering
+// function. Pin changes don't trigger re-embedding because pins don't affect
+// the embedding itself, only how clusters are assembled.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -15,12 +19,12 @@ import {
 
 interface UseTicketClustersResult {
   clusters: ClusterResult | null;
-  loading: boolean;          // True during the initial model load OR while embedding new tickets
+  loading: boolean;
   error: Error | null;
 }
 
 interface CachedEmbedding {
-  contentHash: string;       // The text we last embedded for this ticket
+  contentHash: string;
   vec: Float32Array;
 }
 
@@ -29,14 +33,11 @@ export function useTicketClusters(tickets: TicketLike[]): UseTicketClustersResul
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  // Embedding cache survives re-renders. Cleaned up when tickets are removed.
   const cacheRef = useRef<Map<string, CachedEmbedding>>(new Map());
 
-  // Stable signature of the ticket list — only changes when ticket IDs or
-  // their embeddable content change. This is what we depend on, since the
-  // `tickets` array reference will change every Firestore snapshot even
-  // when content is identical.
-  const signature = useMemo(
+  // Embedding-relevant signature: only ticket id + embeddable content.
+  // Pins don't affect embeddings, so they're not in this signature.
+  const embedSignature = useMemo(
     () => tickets
       .map(t => `${t.id}::${ticketToText(t)}`)
       .sort()
@@ -44,8 +45,15 @@ export function useTicketClusters(tickets: TicketLike[]): UseTicketClustersResul
     [tickets]
   );
 
-  // We need access to the latest tickets inside the effect, but we don't want
-  // tickets-as-array-reference to be a dep. Ref + signature does the trick.
+  // Pin-relevant signature: triggers reclustering without re-embedding.
+  const pinSignature = useMemo(
+    () => tickets
+      .map(t => `${t.id}::${t.pinnedToTicketId ?? ''}`)
+      .sort()
+      .join('||'),
+    [tickets]
+  );
+
   const ticketsRef = useRef(tickets);
   ticketsRef.current = tickets;
 
@@ -67,7 +75,6 @@ export function useTicketClusters(tickets: TicketLike[]): UseTicketClustersResul
         const cache = cacheRef.current;
         const embeddings = new Map<string, Float32Array>();
 
-        // Embed only what's new or changed
         for (const ticket of currentTickets) {
           const text = ticketToText(ticket);
           const cached = cache.get(ticket.id);
@@ -102,9 +109,12 @@ export function useTicketClusters(tickets: TicketLike[]): UseTicketClustersResul
     })();
 
     return () => { cancelled = true; };
-  // signature is the real dependency; we read tickets via the ref above
+  // Re-run on either content changes (need new embeddings) or pin changes
+  // (only need reclustering, but useEffect can't easily express that). The
+  // embedding cache makes pin-only changes effectively free since cached
+  // vectors are reused.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signature]);
+  }, [embedSignature, pinSignature]);
 
   return { clusters, loading, error };
 }

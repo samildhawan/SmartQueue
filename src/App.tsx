@@ -179,14 +179,282 @@ export default function App() {
   );
 }
 
+interface TicketDetailModalProps {
+  ticket: Ticket;
+  position: number;
+  isCurrentlyActive: boolean;
+  isPinned: boolean;
+  clusterLabel?: string;          // present if ticket is in a cluster
+  clusterMemberCount: number;      // total tickets in same cluster (1 if standalone)
+  onClose: () => void;
+  onMakeActive: () => Promise<void>;
+  onUnpin?: () => Promise<void>;
+  onResolveOne: (explanation: string) => Promise<void>;
+  onResolveCluster: (explanation: string) => Promise<void>;
+}
+
+const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
+  ticket,
+  position,
+  isCurrentlyActive,
+  isPinned,
+  clusterLabel,
+  clusterMemberCount,
+  onClose,
+  onMakeActive,
+  onUnpin,
+  onResolveOne,
+  onResolveCluster,
+}) => {
+  const [explanation, setExplanation] = useState('');
+  const [busy, setBusy] = useState(false);
+  const inCluster = clusterMemberCount > 1;
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose, busy]);
+
+  const guarded = (fn: () => Promise<void>) => async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fn();
+      onClose();
+    } catch (err) {
+      console.error('Action failed:', err);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={() => { if (!busy) onClose(); }}
+    >
+      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="bg-primary-light/30 px-6 py-4 flex items-center justify-between border-b border-gray-100 shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-mono text-gray-medium font-bold">#TX-{ticket.id.substring(0, 3).toUpperCase()}</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-medium">
+              {isCurrentlyActive ? 'Now answering' : `Position #${position}`}
+            </span>
+            {inCluster && clusterLabel && (
+              <span className="text-[10px] font-bold uppercase tracking-wider text-primary">
+                · {clusterLabel}
+              </span>
+            )}
+          </div>
+          <button onClick={onClose} disabled={busy} className="p-1 hover:bg-white/60 rounded text-gray-medium disabled:opacity-50" aria-label="Close">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="p-6 space-y-4 overflow-y-auto">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <h3 className="text-lg font-bold text-dark">Student {ticket.uid.substring(0, 4).toUpperCase()}</h3>
+              {ticket.attendanceMode && (
+                <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${ticket.attendanceMode === 'online' ? 'bg-blue-100 text-blue-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                  {ticket.attendanceMode === 'online' ? 'Online' : 'In-Person'}
+                </span>
+              )}
+              {isPinned && (
+                <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">Pinned</span>
+              )}
+              {isCurrentlyActive && (
+                <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-primary text-white">Active</span>
+              )}
+            </div>
+            <p className="text-xs text-gray-medium uppercase font-bold tracking-wider">
+              {ticket.topic} · {ticket.assignment} · {ticket.helpType}
+            </p>
+          </div>
+          <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 italic text-dark leading-relaxed text-sm whitespace-pre-wrap break-words">
+            {ticket.summary
+              ? <>&ldquo;{ticket.summary}&rdquo;</>
+              : <span className="text-gray-medium not-italic">No description provided.</span>}
+          </div>
+          <div className="space-y-2">
+            <label className="text-[10px] font-bold text-gray-medium uppercase tracking-widest">
+              TA Response / Explanation {inCluster ? '(applied to all in cluster if you Resolve All)' : '(optional)'}
+            </label>
+            <textarea
+              value={explanation}
+              onChange={(e) => setExplanation(e.target.value)}
+              placeholder="Optional — type your explanation here..."
+              className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all min-h-[80px] resize-none text-sm"
+              disabled={busy}
+            />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 space-y-3 shrink-0">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3">
+              {isPinned && onUnpin && (
+                <button
+                  onClick={guarded(onUnpin)}
+                  disabled={busy}
+                  className="text-xs font-bold text-amber-700 uppercase hover:underline disabled:opacity-50"
+                >
+                  Unpin
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onClose}
+                disabled={busy}
+                className="px-3 py-2 text-sm font-bold text-gray-medium hover:text-dark transition-colors disabled:opacity-50"
+              >
+                Close
+              </button>
+              {!isCurrentlyActive && (
+                <button
+                  onClick={guarded(onMakeActive)}
+                  disabled={busy}
+                  className="px-3 py-2 text-sm font-bold rounded-lg bg-gray-100 text-dark hover:bg-gray-200 transition-all active:scale-95 disabled:opacity-50"
+                  title="Move this ticket to position #1 so you can answer it now"
+                >
+                  Make Active
+                </button>
+              )}
+            </div>
+          </div>
+          {inCluster ? (
+            <>
+              <button
+                onClick={guarded(() => onResolveCluster(explanation))}
+                disabled={busy}
+                className="w-full py-3 bg-primary text-white text-sm font-bold rounded-xl shadow hover:bg-primary-hover transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                Resolve All {clusterMemberCount} Tickets in Cluster
+              </button>
+              <button
+                onClick={guarded(() => onResolveOne(explanation))}
+                disabled={busy}
+                className="w-full text-xs text-gray-medium hover:text-dark hover:underline transition-colors disabled:opacity-50"
+              >
+                Or, resolve only this ticket
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={guarded(() => onResolveOne(explanation))}
+              disabled={busy}
+              className="w-full py-3 bg-primary text-white text-sm font-bold rounded-xl shadow hover:bg-primary-hover transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              Resolve Ticket
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+interface ResolveClusterDialogProps {
+  clusterLabel: string;
+  memberCount: number;
+  onConfirm: (explanation: string) => Promise<void>;
+  onCancel: () => void;
+}
+
+const ResolveClusterDialog: React.FC<ResolveClusterDialogProps> = ({ clusterLabel, memberCount, onConfirm, onCancel }) => {
+  const [explanation, setExplanation] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onCancel(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onCancel, busy]);
+
+  const handleConfirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onConfirm(explanation);
+    } catch (err) {
+      console.error('Resolve cluster failed:', err);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={() => { if (!busy) onCancel(); }}
+    >
+      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center shrink-0">
+            <CheckCircle2 className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="text-lg font-bold text-dark">Resolve all {memberCount} tickets?</h3>
+            <p className="text-xs text-gray-medium">Cluster: <span className="font-bold">{clusterLabel}</span></p>
+          </div>
+        </div>
+        <p className="text-sm text-dark mb-4">
+          All {memberCount} tickets in this cluster will be marked resolved. The same explanation will be saved on each.
+        </p>
+        <div className="space-y-2 mb-5">
+          <label className="text-[10px] font-bold text-gray-medium uppercase tracking-widest">
+            Shared Explanation (optional)
+          </label>
+          <textarea
+            value={explanation}
+            onChange={(e) => setExplanation(e.target.value)}
+            placeholder="Optional — type your explanation here. It will be saved on every ticket in the cluster."
+            className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all min-h-[80px] resize-none text-sm"
+            disabled={busy}
+          />
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="px-4 py-2 text-sm font-bold text-gray-medium hover:text-dark transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={busy}
+            className="px-4 py-2 text-sm font-bold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-all active:scale-95 disabled:opacity-50 flex items-center gap-2"
+          >
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+            Resolve All {memberCount}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 interface SortableClusterTicketProps {
   ticket: Ticket;
   position: number;     // 1-indexed queue position across all active tickets
   isPinned: boolean;
+  isCurrentlyActive: boolean;
   onUnpin?: () => void;
+  onClick?: () => void;
 }
 
-const SortableClusterTicket: React.FC<SortableClusterTicketProps> = ({ ticket, position, isPinned, onUnpin }) => {
+const SortableClusterTicket: React.FC<SortableClusterTicketProps> = ({ ticket, position, isPinned, isCurrentlyActive, onUnpin, onClick }) => {
   const {
     attributes,
     listeners,
@@ -203,16 +471,25 @@ const SortableClusterTicket: React.FC<SortableClusterTicketProps> = ({ ticket, p
     opacity: isDragging ? 0.4 : 1,
   };
 
+  // Click on the row body opens details. We stopPropagation on the drag
+  // handle and unpin button so they don't also open the modal.
+  const handleRowClick = () => {
+    if (isDragging) return;
+    onClick?.();
+  };
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`px-5 py-4 flex items-center justify-between bg-white border-b border-gray-100 last:border-b-0 ${isDragging ? 'shadow-lg ring-2 ring-primary/20' : ''}`}
+      className={`px-5 py-4 flex items-center justify-between bg-white border-b border-gray-100 last:border-b-0 ${isDragging ? 'shadow-lg ring-2 ring-primary/20' : ''} ${isCurrentlyActive ? 'bg-primary-light/30' : ''} ${onClick ? 'hover:bg-gray-50 cursor-pointer' : ''} transition-colors`}
+      onClick={handleRowClick}
     >
       <div className="flex items-center gap-3 min-w-0">
         <div
           {...attributes}
           {...listeners}
+          onClick={(e) => e.stopPropagation()}
           className="cursor-grab active:cursor-grabbing p-1 hover:bg-gray-100 rounded text-gray-300 hover:text-gray-500 transition-colors shrink-0"
           aria-label="Drag ticket"
         >
@@ -232,6 +509,11 @@ const SortableClusterTicket: React.FC<SortableClusterTicketProps> = ({ ticket, p
                 Pinned
               </span>
             )}
+            {isCurrentlyActive && (
+              <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-primary text-white">
+                Active
+              </span>
+            )}
           </div>
           <span className="text-xs text-gray-medium truncate block">{ticket.topic} · {ticket.assignment} · {ticket.helpType}</span>
         </div>
@@ -239,7 +521,7 @@ const SortableClusterTicket: React.FC<SortableClusterTicketProps> = ({ ticket, p
       <div className="flex items-center gap-3 shrink-0">
         {isPinned && onUnpin && (
           <button
-            onClick={onUnpin}
+            onClick={(e) => { e.stopPropagation(); onUnpin(); }}
             className="text-[10px] font-bold text-amber-700 uppercase tracking-wider hover:underline"
             title="Remove manual pin and let the algorithm decide"
           >
@@ -247,7 +529,7 @@ const SortableClusterTicket: React.FC<SortableClusterTicketProps> = ({ ticket, p
           </button>
         )}
         <span className="text-[10px] font-bold text-gray-medium uppercase">
-          {position === 1 ? 'Now' : `#${position}`}
+          {isCurrentlyActive ? 'Now' : `#${position}`}
         </span>
       </div>
     </div>
@@ -286,6 +568,8 @@ interface ClusterDragViewProps {
   onReorderWithinCluster: (ticketId: string, newCreatedAtMs: number) => Promise<void>;
   onMoveCluster: (memberIds: string[], baseCreatedAtMs: number) => Promise<void>;
   onUnpin: (ticketId: string) => Promise<void>;
+  onMakeActive: (ticketId: string) => Promise<void>;
+  onResolveTickets: (ticketIds: string[], explanation: string) => Promise<void>;
 }
 
 const ClusterDragView: React.FC<ClusterDragViewProps> = ({
@@ -298,6 +582,8 @@ const ClusterDragView: React.FC<ClusterDragViewProps> = ({
   onReorderWithinCluster,
   onMoveCluster,
   onUnpin,
+  onMakeActive,
+  onResolveTickets,
 }) => {
   // Build display order: clusters sorted by their earliest member's createdAt
   const displayOrder = useMemo(() => {
@@ -343,6 +629,43 @@ const ClusterDragView: React.FC<ClusterDragViewProps> = ({
     () => displayOrder.clusters.map((c: any) => `cluster-header-${c.representativeTicketId}`),
     [displayOrder]
   );
+
+  // Currently-active ticket = the one being answered (first in queue order).
+  const currentlyActiveId = activeTickets[0]?.id ?? null;
+
+  // Set of ticket ids that have a manual cluster pin.
+  const pinnedTicketIds = useMemo(
+    () => new Set(session.tickets.filter(t => !!t.pinnedToTicketId).map(t => t.id)),
+    [session.tickets]
+  );
+
+  // Modal state — detail view and "resolve all" confirmation
+  const [detailTicketId, setDetailTicketId] = useState<string | null>(null);
+  const [resolveClusterTarget, setResolveClusterTarget] = useState<{ memberIds: string[]; label: string } | null>(null);
+
+  // Auto-close detail modal if the ticket leaves the active set (e.g. got resolved
+  // by another TA or by the resolve action itself).
+  useEffect(() => {
+    if (detailTicketId && !activeTickets.some(t => t.id === detailTicketId)) {
+      setDetailTicketId(null);
+    }
+  }, [detailTicketId, activeTickets]);
+
+  // Lookup helpers used by the detail modal
+  const detailTicket = detailTicketId ? activeTickets.find(t => t.id === detailTicketId) ?? null : null;
+  const detailClusterContext = useMemo(() => {
+    if (!detailTicket) return null;
+    const inCluster = displayOrder.clusters.find((c: any) =>
+      c.members.some((m: Ticket) => m.id === detailTicket.id)
+    );
+    if (inCluster) {
+      return {
+        label: inCluster.label as string,
+        memberIds: inCluster.members.map((m: Ticket) => m.id) as string[],
+      };
+    }
+    return { label: 'Other', memberIds: [detailTicket.id] };
+  }, [detailTicket, displayOrder]);
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -472,6 +795,7 @@ const ClusterDragView: React.FC<ClusterDragViewProps> = ({
   }
 
   return (
+    <>
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
@@ -488,9 +812,13 @@ const ClusterDragView: React.FC<ClusterDragViewProps> = ({
                 cluster={cluster}
                 positionByTicket={positionByTicket}
                 onUnpin={onUnpin}
-                pinnedTicketIds={new Set(
-                  session.tickets.filter(t => !!t.pinnedToTicketId).map(t => t.id)
-                )}
+                pinnedTicketIds={pinnedTicketIds}
+                currentlyActiveId={currentlyActiveId}
+                onTicketClick={(ticketId) => setDetailTicketId(ticketId)}
+                onResolveAll={(c) => setResolveClusterTarget({
+                  memberIds: c.members.map((m: Ticket) => m.id),
+                  label: c.label,
+                })}
               />
             ))}
 
@@ -512,7 +840,9 @@ const ClusterDragView: React.FC<ClusterDragViewProps> = ({
                       ticket={ticket}
                       position={positionByTicket.get(ticket.id) ?? 0}
                       isPinned={!!ticket.pinnedToTicketId}
+                      isCurrentlyActive={currentlyActiveId === ticket.id}
                       onUnpin={ticket.pinnedToTicketId ? () => onUnpin(ticket.id) : undefined}
+                      onClick={() => setDetailTicketId(ticket.id)}
                     />
                   ))}
                   <DroppableClusterZone clusterKey="noise" label="Other" />
@@ -530,6 +860,35 @@ const ClusterDragView: React.FC<ClusterDragViewProps> = ({
         </SortableContext>
       </SortableContext>
     </DndContext>
+
+    {detailTicket && detailClusterContext && (
+      <TicketDetailModal
+        ticket={detailTicket}
+        position={positionByTicket.get(detailTicket.id) ?? 0}
+        isCurrentlyActive={currentlyActiveId === detailTicket.id}
+        isPinned={pinnedTicketIds.has(detailTicket.id)}
+        clusterLabel={detailClusterContext.memberIds.length > 1 ? detailClusterContext.label : undefined}
+        clusterMemberCount={detailClusterContext.memberIds.length}
+        onClose={() => setDetailTicketId(null)}
+        onMakeActive={() => onMakeActive(detailTicket.id)}
+        onUnpin={pinnedTicketIds.has(detailTicket.id) ? () => onUnpin(detailTicket.id) : undefined}
+        onResolveOne={(explanation) => onResolveTickets([detailTicket.id], explanation)}
+        onResolveCluster={(explanation) => onResolveTickets(detailClusterContext.memberIds, explanation)}
+      />
+    )}
+
+    {resolveClusterTarget && (
+      <ResolveClusterDialog
+        clusterLabel={resolveClusterTarget.label}
+        memberCount={resolveClusterTarget.memberIds.length}
+        onCancel={() => setResolveClusterTarget(null)}
+        onConfirm={async (explanation) => {
+          await onResolveTickets(resolveClusterTarget.memberIds, explanation);
+          setResolveClusterTarget(null);
+        }}
+      />
+    )}
+    </>
   );
 };
 
@@ -538,10 +897,13 @@ interface SortableClusterCardProps {
   cluster: any;
   positionByTicket: Map<string, number>;
   pinnedTicketIds: Set<string>;
+  currentlyActiveId: string | null;
   onUnpin: (ticketId: string) => Promise<void>;
+  onTicketClick: (ticketId: string) => void;
+  onResolveAll: (cluster: any) => void;
 }
 
-const SortableClusterCard: React.FC<SortableClusterCardProps> = ({ cluster, positionByTicket, pinnedTicketIds, onUnpin }) => {
+const SortableClusterCard: React.FC<SortableClusterCardProps> = ({ cluster, positionByTicket, pinnedTicketIds, currentlyActiveId, onUnpin, onTicketClick, onResolveAll }) => {
   const sortableId = `cluster-header-${cluster.representativeTicketId}`;
   const {
     attributes,
@@ -581,9 +943,21 @@ const SortableClusterCard: React.FC<SortableClusterCardProps> = ({ cluster, posi
           </span>
           <span className="text-sm font-bold text-dark truncate">{cluster.label}</span>
         </div>
-        <span className="text-xs text-gray-medium font-bold uppercase tracking-wider shrink-0">
-          {cluster.members.length} similar
-        </span>
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="text-xs text-gray-medium font-bold uppercase tracking-wider">
+            {cluster.members.length} similar
+          </span>
+          {cluster.members.length > 1 && (
+            <button
+              onClick={() => onResolveAll(cluster)}
+              className="px-2.5 py-1 bg-emerald-600 text-white text-[10px] font-bold rounded uppercase tracking-wider hover:bg-emerald-700 active:scale-95 transition-all flex items-center gap-1"
+              title={`Resolve all ${cluster.members.length} tickets in this cluster`}
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              Resolve All
+            </button>
+          )}
+        </div>
       </div>
       <div>
         {cluster.members.map((ticket: Ticket) => (
@@ -592,7 +966,9 @@ const SortableClusterCard: React.FC<SortableClusterCardProps> = ({ cluster, posi
             ticket={ticket}
             position={positionByTicket.get(ticket.id) ?? 0}
             isPinned={pinnedTicketIds.has(ticket.id)}
+            isCurrentlyActive={currentlyActiveId === ticket.id}
             onUnpin={pinnedTicketIds.has(ticket.id) ? () => onUnpin(ticket.id) : undefined}
+            onClick={() => onTicketClick(ticket.id)}
           />
         ))}
         <DroppableClusterZone clusterKey={`cluster-${cluster.representativeTicketId}`} label={cluster.label} />
@@ -3891,6 +4267,33 @@ function AppContent() {
                       }}
                       onUnpin={async (ticketId) => {
                         await updateTicketPin(session.id, ticketId, null);
+                      }}
+                      onMakeActive={async (ticketId) => {
+                        // Set ticket's createdAt to be earlier than the current minimum,
+                        // moving it to the #1 / Now slot. We also clear any pin so the
+                        // clustering can flow naturally afterwards.
+                        try {
+                          const earliest = activeTickets.reduce((min, t) => {
+                            const ms = t.createdAt?.toDate?.()?.getTime?.() ?? Date.now();
+                            return ms < min ? ms : min;
+                          }, Date.now());
+                          await updateDoc(doc(db, 'sessions', session.id, 'tickets', ticketId), {
+                            createdAt: Timestamp.fromMillis(earliest - 1000),
+                          });
+                        } catch (error) {
+                          console.error('Make active failed:', error);
+                        }
+                      }}
+                      onResolveTickets={async (ticketIds, explanation) => {
+                        // Resolve one or many tickets with the same explanation.
+                        // Used by the detail modal (single) and the Resolve All flow (many).
+                        try {
+                          await Promise.all(
+                            ticketIds.map(id => handleResolveTicket(session.id, id, explanation))
+                          );
+                        } catch (error) {
+                          console.error('Resolve tickets failed:', error);
+                        }
                       }}
                     />
                   )}

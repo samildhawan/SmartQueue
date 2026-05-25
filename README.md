@@ -31,7 +31,7 @@ In the **evaluation phase**, we built the full high-fidelity prototype and ran a
 ## Team
 
 - Andrew Goh — low and high-fidelity prototype implementations, subsequent development (embedding, clustering, etc.)
-- Sean Jackson — evaluation design, facilitation, report integration
+- Sean Jackson ([github](https://github.com/seanjackson6325)) — evaluation design, facilitation, report integration
 - Rohan Aslam — front-end prototype, refinement, bug fixing
 - Matthew DeMarinis — data collection, aggregation, convergence rationale
 - Samil Dhawan ([github](https://github.com/samildhawan)) — results analysis, interpretation, design implications

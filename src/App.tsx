@@ -41,6 +41,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { useDroppable } from '@dnd-kit/core';
 import { NOISE_PIN } from './ticket-clustering';
+import { connectTicketsHub } from './realtimeHub';
 import { 
   auth, 
   db, 
@@ -1261,33 +1262,63 @@ function AppContent() {
   // Stable key for session IDs to avoid unnecessary re-subscriptions
   const sessionIds = useMemo(() => sessions.map(s => s.id).sort().join(','), [sessions]);
 
-  // Sub-collection listeners for tickets
+  // Sub-collection listeners for tickets.
+  //
+  // Each session's ticket list first tries the Go realtime hub (one shared
+  // server-side Firestore listener per session, fanned out over WebSocket)
+  // instead of every connected browser opening its own onSnapshot listener.
+  // If the hub is unreachable (not deployed, connection drops, etc.) this
+  // falls back to the direct Firestore listener per session, same as before.
   useEffect(() => {
     if (!user || sessions.length === 0) return;
 
-    const unsubscribes = sessions.map(session => {
-      const ticketsRef = collection(db, 'sessions', session.id, 'tickets');
-      const q = query(ticketsRef, orderBy('createdAt', 'asc'));
+    const applyTickets = (sessionId: string, tickets: Ticket[]) => {
+      const activeTickets = tickets.filter(t => t.status === 'active');
+      // Count only tickets ordered before the current user's ticket
+      const userIndex = activeTickets.findIndex(t => t.uid === user.uid);
+      const aheadCount = userIndex === -1 ? activeTickets.length : userIndex;
+      setSessions(prev => prev.map(s => s.id === sessionId ? {
+        ...s,
+        tickets,
+        queueCount: aheadCount,
+        estWait: aheadCount * s.avgMin,
+        estimatedWait: aheadCount * s.avgMin
+      } : s));
+    };
 
-      return onSnapshot(q, (snapshot) => {
-        const tickets = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Ticket));
-        const activeTickets = tickets.filter(t => t.status === 'active');
-        // Count only tickets ordered before the current user's ticket
-        const userIndex = activeTickets.findIndex(t => t.uid === user.uid);
-        const aheadCount = userIndex === -1 ? activeTickets.length : userIndex;
-        setSessions(prev => prev.map(s => s.id === session.id ? { 
-          ...s, 
-          tickets,
-          queueCount: aheadCount,
-          estWait: aheadCount * s.avgMin,
-          estimatedWait: aheadCount * s.avgMin
-        } : s));
-      }, (error) => {
-        handleFirestoreError(error, OperationType.LIST, `sessions/${session.id}/tickets`);
-      });
+    const cleanups = sessions.map(session => {
+      let disposed = false;
+      let stopFirestore: (() => void) | null = null;
+
+      const subscribeFirestoreFallback = () => {
+        if (disposed || stopFirestore) return;
+        const ticketsRef = collection(db, 'sessions', session.id, 'tickets');
+        const q = query(ticketsRef, orderBy('createdAt', 'asc'));
+        stopFirestore = onSnapshot(q, (snapshot) => {
+          const tickets = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Ticket));
+          applyTickets(session.id, tickets);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.LIST, `sessions/${session.id}/tickets`);
+        });
+      };
+
+      const stopHub = connectTicketsHub(
+        session.id,
+        (tickets) => applyTickets(session.id, tickets as Ticket[]),
+        () => {
+          console.warn(`Realtime hub unavailable for session ${session.id}; falling back to direct Firestore listener.`);
+          subscribeFirestoreFallback();
+        }
+      );
+
+      return () => {
+        disposed = true;
+        stopHub();
+        stopFirestore?.();
+      };
     });
 
-    return () => unsubscribes.forEach(unsub => unsub());
+    return () => cleanups.forEach(cleanup => cleanup());
   }, [sessionIds, user]);
 
   const myTicket = useMemo(() => {

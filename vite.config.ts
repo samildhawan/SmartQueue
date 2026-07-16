@@ -15,7 +15,7 @@ export default defineConfig(({mode}) => {
       },
     },
     optimizeDeps: {
-      exclude: ['@xenova/transformers'],
+      include: ['@xenova/transformers'],
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.

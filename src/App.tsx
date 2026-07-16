@@ -42,6 +42,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useDroppable } from '@dnd-kit/core';
 import { NOISE_PIN } from './ticket-clustering';
 import { connectTicketsHub } from './realtimeHub';
+import { fetchETA, recordResolution } from './waittimeApi';
 import { 
   auth, 
   db, 
@@ -1277,6 +1278,8 @@ function AppContent() {
       // Count only tickets ordered before the current user's ticket
       const userIndex = activeTickets.findIndex(t => t.uid === user.uid);
       const aheadCount = userIndex === -1 ? activeTickets.length : userIndex;
+      // avgMin-based estimate first, so the UI has an immediate value —
+      // upgraded below to the Go backend's EWMA-based ETA if it responds.
       setSessions(prev => prev.map(s => s.id === sessionId ? {
         ...s,
         tickets,
@@ -1284,6 +1287,16 @@ function AppContent() {
         estWait: aheadCount * s.avgMin,
         estimatedWait: aheadCount * s.avgMin
       } : s));
+
+      fetchETA(sessionId, aheadCount).then(eta => {
+        if (!eta) return; // backend unreachable — keep the avgMin-based estimate
+        const minutes = Math.round(eta.estimatedMinutes);
+        setSessions(prev => prev.map(s => s.id === sessionId ? {
+          ...s,
+          estWait: minutes,
+          estimatedWait: minutes
+        } : s));
+      });
     };
 
     const cleanups = sessions.map(session => {
@@ -1714,6 +1727,18 @@ function AppContent() {
         taExplanation: explanation,
         resolvedAt: serverTimestamp()
       });
+      // Feed the real resolution duration back to the wait-time service so
+      // future ETAs reflect actual service times instead of just avgMin.
+      // Best-effort — Firestore above is already the source of truth.
+      const session = sessions.find(s => s.id === sessionId);
+      const ticket = session?.tickets.find(t => t.id === ticketId);
+      const createdMs = ticket?.createdAt?.toDate?.()?.getTime();
+      if (createdMs) {
+        const durationSeconds = (Date.now() - createdMs) / 1000;
+        if (durationSeconds > 0) {
+          recordResolution(sessionId, ticketId, ticket?.topic || '', session?.host || '', durationSeconds);
+        }
+      }
     } catch (error) {
       console.error('Error resolving ticket:', error);
     }

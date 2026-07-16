@@ -12,6 +12,7 @@ import (
 	"cloud.google.com/go/firestore"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 
 	"github.com/samildhawan/SmartQueue/server/internal/cluster"
 	"github.com/samildhawan/SmartQueue/server/internal/hub"
@@ -47,6 +48,14 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// No auth middleware exists yet (see backend-architecture.md's open
+	// question on Firebase ID token verification) so this is left wide open
+	// to match that same posture, not tightened independently of it.
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{"GET", "POST"},
+		AllowedHeaders: []string{"Content-Type"},
+	}))
 
 	r.Route("/api", func(api chi.Router) {
 		waittime.NewHandler(waittimeSvc).Routes(api)

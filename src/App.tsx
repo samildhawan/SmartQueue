@@ -1535,7 +1535,11 @@ function AppContent() {
     setRegError('');
     setIsRegLoading(true);
     try {
-      // Validate school
+      // Validate school selection. For "join existing school", the actual
+      // existence check has to wait until after auth — schools/{schoolId}
+      // reads require isSignedIn(), so checking pre-auth always fails with
+      // "Missing or insufficient permissions" regardless of whether the
+      // school exists.
       let schoolId: string;
       if (regRole === 'ta' && regSchoolMode === 'create') {
         // TA creating a new school
@@ -1554,20 +1558,25 @@ function AppContent() {
           return;
         }
         schoolId = regSchoolId.trim().toLowerCase();
-        const existingSchool = await getSchool(schoolId);
-        if (!existingSchool) {
-          setRegError(`No school found with ID "${schoolId}". Check the code and try again.`);
-          setIsRegLoading(false);
-          return;
-        }
       }
 
       // Create Firebase Auth account
       const cred = await registerWithEmail(regEmail, regPassword);
-      
-      // Create school doc if TA is creating one
+
+      // Create school doc if TA is creating one; otherwise now that we're
+      // signed in, confirm the school being joined actually exists — roll
+      // back the auth account if not, so a bad school ID doesn't leave a
+      // dangling account with no profile.
       if (regRole === 'ta' && regSchoolMode === 'create') {
         await createSchool(schoolId, { name: regSchoolName.trim(), createdBy: cred.user.uid });
+      } else {
+        const existingSchool = await getSchool(schoolId);
+        if (!existingSchool) {
+          await cred.user.delete();
+          setRegError(`No school found with ID "${schoolId}". Check the code and try again.`);
+          setIsRegLoading(false);
+          return;
+        }
       }
 
       // Create user profile in Firestore

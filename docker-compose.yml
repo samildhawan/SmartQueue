@@ -1,0 +1,18 @@
+services:
+  # Local Firestore emulator — lets the Go backend's Firestore-touching
+  # tests (internal/waittime, internal/hub, internal/cluster) run against
+  # a real Firestore API without hitting a live project or needing
+  # credentials. See server/internal/testutil for the client helper and
+  # backend-architecture.md for which tests actually use this.
+  firestore-emulator:
+    image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
+    # Only published as linux/amd64; runs fine under emulation on Apple
+    # Silicon (Docker Desktop handles this transparently) but is pinned
+    # explicitly here so it doesn't print a platform-mismatch warning.
+    platform: linux/amd64
+    command: >
+      gcloud emulators firestore start
+      --host-port=0.0.0.0:8081
+      --database-mode=firestore-native
+    ports:
+      - "8081:8081"

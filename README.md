@@ -48,9 +48,9 @@ Since then, a Go backend (`server/`) has been added alongside the original Fireb
 
 Three services, each its own package under `server/internal/`:
 
-- **`waittime`**: tracks an exponentially-weighted moving average of ticket resolution time per topic and exposes a real ETA endpoint (`GET /api/sessions/{sessionId}/eta`), replacing the static `avgMin` a TA sets once at session creation. Also exposes a CSV export endpoint for evaluation data.
-- **`cluster`**: the server-side twin of the frontend's in-browser MiniLM + DBSCAN clustering (`src/ticket-clustering.ts`). Calls the Gemini embeddings API once per ticket, caches vectors on the ticket doc, runs DBSCAN centrally, and writes `clusterId`/`clusterLabel` back to Firestore (`POST /api/sessions/{sessionId}/recluster`) so every client just reads a field instead of downloading a model and recomputing clusters itself.
-- **`hub`**: a WebSocket endpoint (`GET /ws?sessionId=...`) backed by *one* server-side Firestore listener per session, fanned out to every connected browser. Cuts Firestore listener costs from O(clients × sessions) to O(sessions), and gives a single place to eventually hang presence (remote vs. in-person) or push notifications.
+- **`waittime`** *(wired in, live)*: tracks an exponentially-weighted moving average of ticket resolution time per topic and exposes a real ETA endpoint (`GET /api/sessions/{sessionId}/eta`), replacing the static `avgMin` a TA sets once at session creation. Also exposes a CSV export endpoint for evaluation data.
+- **`hub`** *(wired in, live)*: a WebSocket endpoint (`GET /ws?sessionId=...`) backed by *one* server-side Firestore listener per session, fanned out to every connected browser. Cuts Firestore listener costs from O(clients × sessions) to O(sessions), and gives a single place to eventually hang presence (remote vs. in-person) or push notifications.
+- **`cluster`** *(built, not yet wired in)*: the server-side twin of the frontend's in-browser MiniLM + DBSCAN clustering (`src/ticket-clustering.ts`). Calls the Gemini embeddings API once per ticket, caches vectors on the ticket doc, runs DBSCAN centrally, and would write `clusterId`/`clusterLabel` back to Firestore (`POST /api/sessions/{sessionId}/recluster`) — but the frontend hasn't been switched over to read those fields yet, so `useTicketClusters.ts` still does the clustering client-side today. See `backend-architecture.md` for the full status.
 - **`ticket`**: the shared clustering/pin-resolution logic (DBSCAN, manual TA pin overrides, cycle handling), kept dependency-free so it has a fast, emulator-free test suite (`go test ./internal/ticket/...`).
 
 ### Running it locally
@@ -68,3 +68,14 @@ npm run dev
 ```
 
 The frontend reads `VITE_HUB_BASE` (see `.env.example`, defaults to `http://localhost:8080`) to find the hub. Requires Google Cloud Application Default Credentials with access to the Firebase project's Firestore (`gcloud auth application-default login`), and a `GENAI_API_KEY` env var on the backend if you want `/recluster` to work.
+
+### Testing
+
+`internal/ticket` is pure logic (no Firestore) and needs nothing beyond `go test ./internal/ticket/...`. Everything else touches Firestore, so it needs a real one to test against, which is a local emulator, via Docker:
+
+```bash
+docker compose up -d firestore-emulator
+FIRESTORE_EMULATOR_HOST=localhost:8081 go test ./...
+```
+
+Tests against the emulator (in `server/internal/{waittime,hub,cluster}`) skip themselves cleanly with a clear message if `FIRESTORE_EMULATOR_HOST` isn't set or the emulator isn't reachable, so a plain `go test ./...` never hard-fails for anyone who hasn't started it.
